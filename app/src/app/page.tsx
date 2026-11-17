@@ -2,7 +2,6 @@
 "use client";
 
 import {
-  useCallback,
   useEffect,
   useRef,
   useState,
@@ -11,81 +10,52 @@ import {
 import {
   ArrowUp,
   Bot,
-  Check,
-  Download,
   FileSpreadsheet,
   Globe2,
   LoaderCircle,
   Plus,
   RotateCcw,
   Sparkles,
-  UserRound,
 } from "lucide-react";
+
+import {
+  initSearch,
+  expandSearch,
+  searchEntries,
+  type CSVResponse,
+} from "@/lib/routes";
+
+import ChatMessage, {
+  type Message,
+  type ChatFile,
+} from "@/components/chatbot/ChatMessege";
+
+import AttributeSelector, {
+  formatAttribute,
+} from "@/components/chatbot/AttributeSelector";
+
 
 type Stage =
   | "initial"
-  | "loading_initial"
-  | "loading_expand"
+  | "scraping"
+  | "expanding"
   | "selecting"
-  | "loading_search";
+  | "enriching";
 
-type CsvFile = {
-  filename: string;
-  url: string;
-  count?: number;
-};
-
-type Message = {
-  id: string;
-  role: "assistant" | "user";
-  content: string;
-  file?: CsvFile;
-  attributes?: string[];
-};
-
-type ExpandResponse = {
-  dataset_id: string;
-  sample_size: number;
-  available_attributes: string[];
-  sample_results: Record<string, unknown>[];
-};
-
-const initialMessage: Message = {
+const welcome: Message = {
   id: "welcome",
   role: "assistant",
   content:
-    "Hello! I'm your web research assistant. " +
-    "Share a webpage URL and briefly describe what " +
-    "you're looking for. I'll scrape the initial " +
-    "entries and suggest additional attributes " +
-    "that we can research.",
+    "Hello! Share a webpage URL and briefly describe " +
+    "what you're looking for. I'll scrape the webpage, " +
+    "return an initial CSV, and suggest attributes " +
+    "for further research.",
 };
 
-function createMessage(
-  role: Message["role"],
-  content: string,
-  extra: Partial<Message> = {}
-): Message {
-  return {
-    id: crypto.randomUUID(),
-    role,
-    content,
-    ...extra,
-  };
-}
-
-function formatAttribute(attribute: string) {
-  return attribute
-    .replaceAll("_", " ")
-    .replace(/\b\w/g, (char) => char.toUpperCase());
-}
-
-function parseInitialInput(text: string) {
+function extractInput(text: string) {
   const match = text.match(/https?:\/\/[^\s<>]+/i);
 
-  if (!match) {
-    return null;
-  }
+  if (!match) return null;
 
   const url = match[0].replace(/[),.;]+$/, "");
 
@@ -105,50 +75,23 @@ function parseInitialInput(text: string) {
   };
 }
 
-async function postApi(
-  endpoint: string,
-  payload: unknown
-): Promise<Response> {
-  const response = await fetch(`/api/backend/${endpoint}`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
-  });
-
-  if (!response.ok) {
-    let message = `Request failed (${response.status})`;
-
-    try {
-      const error = await response.json();
-
-      if (typeof error.detail === "string") {
-        message = error.detail;
-      } else if (error.detail) {
-        message = JSON.stringify(error.detail);
-      }
-    } catch {
-      // Retain fallback error.
-    }
-
-    throw new Error(message);
-  }
-
-  return response;
+function getError(error: unknown) {
+  return error instanceof Error
+    ? error.message
+    : "An unexpected error occurred.";
 }
 
 export default function HomePage() {
   const [messages, setMessages] = useState<Message[]>([
-    initialMessage,
+    welcome,
   ]);
 
   const [stage, setStage] = useState<Stage>("initial");
   const [input, setInput] = useState("");
 
-  const [datasetId, setDatasetId] = useState<string | null>(
-    null
-  );
+  const [datasetId, setDatasetId] = useState<
+    string | null
+  >(null);
 
   const [availableAttributes, setAvailableAttributes] =
     useState<string[]>([]);
@@ -156,16 +99,14 @@ export default function HomePage() {
   const [selectedAttributes, setSelectedAttributes] =
     useState<string[]>([]);
 
-  const [description, setDescription] = useState("");
-
   const scrollRef = useRef<HTMLDivElement>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const objectUrls = useRef<string[]>([]);
+  const busyRef = useRef(false);
 
   const isLoading =
-    stage === "loading_initial" ||
-    stage === "loading_expand" ||
-    stage === "loading_search";
+    stage === "scraping" ||
+    stage === "expanding" ||
+    stage === "enriching";
 
   useEffect(() => {
     scrollRef.current?.scrollTo({
@@ -180,279 +121,286 @@ export default function HomePage() {
     };
   }, []);
 
-  const registerDownload = useCallback(
-    (blob: Blob, filename: string, count?: number): CsvFile => {
-      const url = URL.createObjectURL(blob);
-      objectUrls.current.push(url);
-
-      return { filename, url, count };
-    },
-    []
-  );
-
   function addMessage(
     role: Message["role"],
     content: string,
-    extra: Partial<Message> = {}
+    file?: ChatFile
   ) {
     setMessages((previous) => [
       ...previous,
-      createMessage(role, content, extra),
+      {
+        id: crypto.randomUUID(),
+        role,
+        content,
+        file,
+      },
     ]);
   }
 
-  function toggleAttribute(attribute: string) {
-    if (isLoading) return;
+  function createFile(
+    response: CSVResponse,
+    filename: string
+  ): ChatFile {
+    const url = URL.createObjectURL(response.blob);
 
-    setSelectedAttributes((previous) =>
-      previous.includes(attribute)
-        ? previous.filter((item) => item !== attribute)
-        : [...previous, attribute]
-    );
+    objectUrls.current.push(url);
+
+    return {
+      filename,
+      url,
+      count: response.entryCount,
+    };
   }
 
-  function resetConversation() {
-    if (isLoading) return;
+  function reset() {
+    if (busyRef.current) return;
 
+    setMessages([welcome]);
+    setStage("initial");
+    setInput("");
     setDatasetId(null);
     setAvailableAttributes([]);
     setSelectedAttributes([]);
-    setDescription("");
-    setInput("");
-    setStage("initial");
-
-    setMessages([initialMessage]);
-
-    textareaRef.current?.focus();
   }
 
-  async function handleInitialSearch(text: string) {
-    const parsed = parseInitialInput(text);
+  async function handleInitial(text: string) {
+    const parsed = extractInput(text);
 
     if (!parsed) {
       addMessage(
         "assistant",
-        "Please provide a valid HTTP or HTTPS webpage URL. " +
-          "You can include a description after the link."
+        "Please provide a valid webpage URL " +
+          "beginning with https:// or http://."
       );
       return;
     }
 
-    setDescription(parsed.description);
-    setStage("loading_initial");
+    busyRef.current = true;
+    setStage("scraping");
 
     try {
-      // Step 1: Scrape the webpage.
-      const initialResponse = await postApi("init_search", {
-        webpages: [parsed.url],
-      });
+      // 1. Scrape the initial webpage.
+      const initial = await initSearch([parsed.url]);
 
-      const newDatasetId =
-        initialResponse.headers.get("x-dataset-id");
-
-      if (!newDatasetId) {
-        throw new Error(
-          "The backend did not return a dataset ID."
-        );
+      if (!initial.datasetId) {
+        throw new Error("Missing dataset ID.");
       }
 
-      const count = Number(
-        initialResponse.headers.get("x-entry-count") || 0
+      const id = initial.datasetId;
+      setDatasetId(id);
+
+      const initialFile = createFile(
+        initial,
+        "initial.csv"
       );
-
-      const initialBlob = await initialResponse.blob();
-
-      const initialFile = registerDownload(
-        initialBlob,
-        "initial.csv",
-        count
-      );
-
-      setDatasetId(newDatasetId);
 
       addMessage(
         "assistant",
-        `I found ${count} entries on this webpage. ` +
-          "Here's the initial dataset. " +
-          "I'll now examine a random sample of up to " +
-          "10 entries to discover useful enrichment attributes.",
-        { file: initialFile }
+        "I've extracted the initial entries from " +
+          "your webpage. Download the CSV below. " +
+          "I'll now research a sample of 10 entries " +
+          "to identify useful enrichment attributes.",
+        initialFile
       );
 
-      // Step 2: Search sample and discover attributes.
-      setStage("loading_expand");
+      // 2. Discover available attributes.
+      setStage("expanding");
 
-      const expandResponse = await postApi(
-        "expand_search",
-        {
-          dataset_id: newDatasetId,
-          sample_size: 10,
-          description: parsed.description,
-        }
+      const expanded = await expandSearch(
+        id,
+        parsed.description,
+        10
       );
 
-      const expanded: ExpandResponse =
-        await expandResponse.json();
+      const sampleFile = createFile(
+        expanded,
+        "expanded_sample.csv"
+      );
 
-      setAvailableAttributes(expanded.available_attributes);
+      const attributes = expanded.availableAttributes;
+
+      setAvailableAttributes(attributes);
       setSelectedAttributes([]);
 
       addMessage(
         "assistant",
-        `I researched ${expanded.sample_size} sampled entries. ` +
-          "Here are the additional attributes I found. " +
-          "Select the ones you want, or type their names " +
-          "into the chat. Then I'll enrich every entry " +
-          "in your initial CSV.",
-        { attributes: expanded.available_attributes }
+        "I've completed the sample research. " +
+          "You can download the sample CSV below.",
+        sampleFile
+      );
+
+      if (attributes.length === 0) {
+        addMessage(
+          "assistant",
+          "The backend returned no suggested attributes. " +
+            "Please check the enrichment endpoint or " +
+            "start another research session."
+        );
+
+        setStage("initial");
+        return;
+      }
+
+      addMessage(
+        "assistant",
+        "Choose from the suggested attributes below, " +
+          "or enter the attribute names in the chat. " +
+          "I'll search every entry in your initial CSV."
       );
 
       setStage("selecting");
     } catch (error) {
       addMessage(
         "assistant",
-        error instanceof Error
-          ? `I encountered an error: ${error.message}`
-          : "Something went wrong during scraping."
+        `Research failed: ${getError(error)}`
       );
 
-      // A successful initial CSV may already exist.
       setStage("initial");
+    } finally {
+      busyRef.current = false;
     }
   }
 
-  function resolveRequestedAttributes(text: string) {
+  function toggleAttribute(attribute: string) {
+    setSelectedAttributes((current) =>
+      current.includes(attribute)
+        ? current.filter((item) => item !== attribute)
+        : [...current, attribute]
+    );
+  }
+
+  function resolveAttributes(text: string) {
     const normalized = text.toLowerCase();
 
-    // Accept comma-separated names:
-    // e.g. industry, founding year, location
-    const candidates = text
+    const requested = text
       .split(/[,;\n]+/)
-      .map((part) =>
-        part
+      .map((item) =>
+        item
           .trim()
           .toLowerCase()
           .replace(/\s+/g, "_")
-      )
-      .filter(Boolean);
+      );
 
-    const exact = candidates.filter((candidate) =>
-      availableAttributes.includes(candidate)
+    const exact = requested.filter((attr) =>
+      availableAttributes.includes(attr)
     );
 
     if (exact.length > 0) {
       return [...new Set(exact)];
     }
 
-    // Also recognize attribute names mentioned naturally.
-    return availableAttributes.filter((attribute) =>
+    return availableAttributes.filter((attr) =>
       normalized.includes(
-        attribute.replaceAll("_", " ")
-      ) || normalized.includes(attribute)
+        attr.replaceAll("_", " ")
+      ) || normalized.includes(attr)
     );
   }
 
-  async function handleFullSearch(attributes: string[]) {
-    if (!datasetId || attributes.length === 0) {
+  async function handleEnrichment(
+    attributes: string[]
+  ) {
+    if (!datasetId) {
       addMessage(
         "assistant",
-        "Please select at least one available attribute."
+        "No dataset is active. Please start with a webpage."
       );
       return;
     }
 
-    setStage("loading_search");
+    if (attributes.length === 0) {
+      addMessage(
+        "assistant",
+        "Please select at least one suggested attribute."
+      );
+      return;
+    }
+
+    busyRef.current = true;
+    setStage("enriching");
 
     try {
-      const response = await postApi("search", {
-        dataset_id: datasetId,
-        attributes,
-      });
-
-      const count = Number(
-        response.headers.get("x-entry-count") || 0
+      // 3. Enrich every entry.
+      const completed = await searchEntries(
+        datasetId,
+        attributes
       );
 
-      const blob = await response.blob();
-
-      const file = registerDownload(
-        blob,
-        "enriched.csv",
-        count
+      const file = createFile(
+        completed,
+        "enriched.csv"
       );
 
       addMessage(
         "assistant",
-        `Your enrichment is complete! I processed ` +
-          `${count} entries with these attributes: ` +
+        "Your full research dataset is complete! " +
+          "The selected attributes are: " +
           attributes.map(formatAttribute).join(", ") +
-          ". Download the full CSV below.",
-        { file }
+          ". Download the completed CSV below.",
+        file
       );
 
       addMessage(
         "assistant",
         "Would you like to research another webpage? " +
-          "Share a new URL and describe what you're looking for."
+          "Send me another URL and a short description."
       );
 
+      // Prepare for another research cycle.
       setDatasetId(null);
       setAvailableAttributes([]);
       setSelectedAttributes([]);
-      setDescription("");
       setStage("initial");
     } catch (error) {
       addMessage(
         "assistant",
-        error instanceof Error
-          ? `Enrichment failed: ${error.message}. ` +
-              "You can adjust your attributes and try again."
-          : "Enrichment failed. Please try again."
+        "Full enrichment failed: " +
+          getError(error) +
+          " You can adjust the attributes and retry."
       );
 
       setStage("selecting");
+    } finally {
+      busyRef.current = false;
     }
   }
 
-  async function sendMessage() {
+  async function handleSend() {
     const text = input.trim();
 
-    if (!text || isLoading) return;
+    if (!text || busyRef.current) return;
 
     setInput("");
     addMessage("user", text);
 
     if (stage === "initial") {
-      await handleInitialSearch(text);
+      await handleInitial(text);
       return;
     }
 
     if (stage === "selecting") {
-      const requested = resolveRequestedAttributes(text);
+      const requested = resolveAttributes(text);
 
-      if (requested.length === 0) {
-        if (
-          /^(search|start|enrich|continue|go|run)$/i.test(text)
-        ) {
-          await handleFullSearch(selectedAttributes);
-        } else {
-          addMessage(
-            "assistant",
-            "I couldn't match those attributes. " +
-              "Please select from the suggested attributes " +
-              "or enter their names separated by commas."
-          );
-        }
-        return;
+      if (requested.length > 0) {
+        setSelectedAttributes(requested);
+        await handleEnrichment(requested);
+      } else if (
+        /^(start|search|enrich|continue|go|run)$/i.test(
+          text
+        )
+      ) {
+        await handleEnrichment(selectedAttributes);
+      } else {
+        addMessage(
+          "assistant",
+          "Please choose from the suggested attributes, " +
+            "or enter their names separated by commas."
+        );
       }
-
-      setSelectedAttributes(requested);
-      await handleFullSearch(requested);
     }
   }
 
-  function submitSelection() {
-    if (selectedAttributes.length === 0 || isLoading) {
+  function submitSelected() {
+    if (busyRef.current || selectedAttributes.length === 0) {
       return;
     }
 
@@ -462,13 +410,14 @@ export default function HomePage() {
         selectedAttributes.map(formatAttribute).join(", ")
     );
 
-    void handleFullSearch(selectedAttributes);
+    void handleEnrichment(selectedAttributes);
   }
 
-  const placeholder =
-    stage === "selecting"
-      ? "Enter attributes, e.g. industry, location..."
-      : "Paste a webpage URL and describe your research...";
+  const loadingText = {
+    scraping: "Scraping the initial webpage...",
+    expanding: "Researching sample entries...",
+    enriching: "Enriching the complete dataset...",
+  };
 
   return (
     <div className="app-shell">
@@ -479,7 +428,10 @@ export default function HomePage() {
           </div>
 
           <div>
-            <div className="brand-title">Web Research</div>
+            <div className="brand-title">
+              Web Research
+            </div>
+
             <div className="brand-subtitle">
               Scrape & enrich data
             </div>
@@ -488,7 +440,7 @@ export default function HomePage() {
 
         <button
           className="new-chat-button"
-          onClick={resetConversation}
+          onClick={reset}
           disabled={isLoading}
         >
           <Plus size={17} />
@@ -496,7 +448,9 @@ export default function HomePage() {
         </button>
 
         <div className="sidebar-section">
-          <span className="sidebar-label">WORKFLOW</span>
+          <span className="sidebar-label">
+            WORKFLOW
+          </span>
 
           <div className="workflow-item">
             <Globe2 size={16} />
@@ -515,8 +469,7 @@ export default function HomePage() {
         </div>
 
         <div className="sidebar-footer">
-          <span className="status-dot" />
-          Connected to research API
+          Research assistant
         </div>
       </aside>
 
@@ -529,143 +482,61 @@ export default function HomePage() {
 
           <button
             className="reset-button"
-            onClick={resetConversation}
+            onClick={reset}
             disabled={isLoading}
-            title="Start a new conversation"
           >
             <RotateCcw size={17} />
           </button>
         </header>
 
-        <div className="messages-container" ref={scrollRef}>
+        <div
+          className="messages-container"
+          ref={scrollRef}
+        >
           <div className="messages-inner">
             {messages.map((message) => (
-              <div
+              <ChatMessage
                 key={message.id}
-                className={`message ${message.role}`}
-              >
-                <div className="avatar">
-                  {message.role === "assistant" ? (
-                    <Bot size={19} />
-                  ) : (
-                    <UserRound size={18} />
-                  )}
-                </div>
-
-                <div className="message-content">
-                  {message.role === "assistant" && (
-                    <div className="message-author">
-                      Research Assistant
-                    </div>
-                  )}
-
-                  <div className="message-text">
-                    {message.content}
-                  </div>
-
-                  {message.file && (
-                    <a
-                      className="file-card"
-                      href={message.file.url}
-                      download={message.file.filename}
-                    >
-                      <div className="file-icon">
-                        <FileSpreadsheet size={23} />
-                      </div>
-
-                      <div className="file-details">
-                        <strong>
-                          {message.file.filename}
-                        </strong>
-                        <span>
-                          {message.file.count ?? 0} entries
-                          {" · "}CSV file
-                        </span>
-                      </div>
-
-                      <Download size={19} />
-                    </a>
-                  )}
-
-                  {message.attributes &&
-                    message.attributes.length > 0 && (
-                      <div className="attribute-section">
-                        <div className="attribute-heading">
-                          Suggested attributes
-                        </div>
-
-                        <div className="attribute-list">
-                          {message.attributes.map((attribute) => {
-                            const selected =
-                              selectedAttributes.includes(
-                                attribute
-                              );
-
-                            return (
-                              <button
-                                key={attribute}
-                                className={
-                                  "attribute-chip " +
-                                  (selected ? "selected" : "")
-                                }
-                                onClick={() =>
-                                  toggleAttribute(attribute)
-                                }
-                                disabled={
-                                  stage !== "selecting"
-                                }
-                              >
-                                {selected && <Check size={13} />}
-                                {formatAttribute(attribute)}
-                              </button>
-                            );
-                          })}
-                        </div>
-
-                        {stage === "selecting" && (
-                          <button
-                            className="enrich-button"
-                            onClick={submitSelection}
-                            disabled={
-                              selectedAttributes.length === 0
-                            }
-                          >
-                            <Sparkles size={16} />
-                            Enrich all entries
-                            {selectedAttributes.length > 0 &&
-                              ` (${selectedAttributes.length})`}
-                          </button>
-                        )}
-                      </div>
-                    )}
-                </div>
-              </div>
+                message={message}
+              />
             ))}
 
-            {isLoading && (
+            {stage === "selecting" && (
               <div className="message assistant">
                 <div className="avatar">
                   <Bot size={19} />
                 </div>
 
                 <div className="message-content">
-                  <div className="message-author">
-                    Research Assistant
-                  </div>
+                  <AttributeSelector
+                    attributes={availableAttributes}
+                    selected={selectedAttributes}
+                    onToggle={toggleAttribute}
+                    onSubmit={submitSelected}
+                  />
+                </div>
+              </div>
+            )}
 
+            {isLoading && (
+              <div
+                className="message assistant"
+                role="status"
+              >
+                <div className="avatar">
+                  <Bot size={19} />
+                </div>
+
+                <div className="message-content">
                   <div className="loading-message">
                     <LoaderCircle
-                      size={17}
+                      size={18}
                       className="spin"
                     />
-                    {stage === "loading_initial" &&
-                      "Scraping the webpage..."}
 
-                    {stage === "loading_expand" &&
-                      "Researching sample entries and discovering attributes..."}
-
-                    {stage === "loading_search" &&
-                      "Researching all entries and preparing your CSV..."}
+                    {loadingText[
+                      stage as keyof typeof loadingText
+                    ]}
                   </div>
                 </div>
               </div>
@@ -674,30 +545,32 @@ export default function HomePage() {
         </div>
 
         <div className="composer-area">
-          {stage === "selecting" &&
-            selectedAttributes.length > 0 && (
-              <div className="selection-indicator">
-                {selectedAttributes.length} attributes selected
-              </div>
-            )}
+          {stage === "selecting" && (
+            <div className="selection-indicator">
+              {selectedAttributes.length} attributes selected
+            </div>
+          )}
 
           <div className="composer">
             <textarea
-              ref={textareaRef}
               value={input}
               onChange={(event) =>
                 setInput(event.target.value)
               }
-              placeholder={placeholder}
-              rows={2}
               disabled={isLoading}
+              placeholder={
+                stage === "selecting"
+                  ? "Enter attributes, e.g. founding year, headquarters..."
+                  : "Paste a webpage URL and describe your research..."
+              }
+              rows={2}
               onKeyDown={(event) => {
                 if (
                   event.key === "Enter" &&
                   !event.shiftKey
                 ) {
                   event.preventDefault();
-                  void sendMessage();
+                  void handleSend();
                 }
               }}
             />
@@ -709,9 +582,9 @@ export default function HomePage() {
 
               <button
                 className="send-button"
-                onClick={() => void sendMessage()}
+                onClick={() => void handleSend()}
                 disabled={!input.trim() || isLoading}
-                aria-label="Send message"
+                aria-label="Send"
               >
                 {isLoading ? (
                   <LoaderCircle
@@ -726,8 +599,8 @@ export default function HomePage() {
           </div>
 
           <p className="footer-note">
-            Research results may contain missing or
-            inaccurate information. Verify important facts.
+            AI-generated research results should be verified
+            against their sources.
           </p>
         </div>
       </main>

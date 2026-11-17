@@ -1,30 +1,47 @@
-import uuid
 
-import requests
-from fastapi import APIRouter, HTTPException
-from fastapi.responses import FileResponse
+from flask import Blueprint, request, jsonify, send_file
 
-from models.schemas import InitSearchRequest
-from utils.scraping import init_search, save_init_search
-
-router = APIRouter(tags=["Initial Search"])
+from utils.initial_scraper import init_search, save_init_search
+from utils.storage import create_dataset_id
 
 
-@router.post("/init_search")
-def init_search_route(request: InitSearchRequest):
+init_search_bp = Blueprint("init_search", __name__)
+
+
+@init_search_bp.route("/init_search", methods=["POST"])
+def init_search_route():
+    data = request.get_json(silent=True) or {}
+
+    webpages = data.get("webpages")
+    selector = data.get("selector")
+
+    if (
+        not isinstance(webpages, list)
+        or not webpages
+        or not all(isinstance(url, str) for url in webpages)
+    ):
+        return jsonify({
+            "error": "webpages must be a nonempty list of URLs"
+        }), 400
+
+    if selector is not None and not isinstance(selector, str):
+        return jsonify({
+            "error": "selector must be a string"
+        }), 400
+
     try:
         entries, suggestions = init_search(
-            webpages=request.webpages,
-            selector=request.selector
+            webpages=webpages,
+            selector=selector
         )
 
         if not entries:
-            raise HTTPException(
-                status_code=422,
-                detail="No entries found. Try a CSS selector."
-            )
+            return jsonify({
+                "error": "No entries found",
+                "suggested_elements": suggestions
+            }), 422
 
-        dataset_id = str(uuid.uuid4())
+        dataset_id = create_dataset_id()
 
         csv_path = save_init_search(
             entries=entries,
@@ -32,23 +49,22 @@ def init_search_route(request: InitSearchRequest):
             suggestions=suggestions
         )
 
-        return FileResponse(
-            path=csv_path,
-            filename="initial.csv",
-            media_type="text/csv",
-            headers={
-                "X-Dataset-ID": dataset_id,
-                "X-Entry-Count": str(len(entries))
-            }
+        response = send_file(
+            csv_path,
+            mimetype="text/csv",
+            as_attachment=True,
+            download_name="initial.csv"
         )
 
-    except requests.RequestException as exc:
-        raise HTTPException(
-            status_code=502,
-            detail=str(exc)
-        )
+        response.headers["X-Dataset-ID"] = dataset_id
+        response.headers["X-Entry-Count"] = str(len(entries))
+
+        return response
+
     except ValueError as exc:
-        raise HTTPException(
-            status_code=400,
-            detail=str(exc)
-        )
+        return jsonify({"error": str(exc)}), 400
+
+    except Exception:
+        return jsonify({
+            "error": "Failed to initialize search"
+        }), 500

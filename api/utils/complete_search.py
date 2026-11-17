@@ -139,7 +139,7 @@ def summarize_attributes(
     return output
 
 
-def complete_search(
+def scrape_attr(
     entry: dict,
     attributes: list[str],
     search_results: list[dict] | None = None
@@ -153,56 +153,10 @@ def complete_search(
 
         search_results = google_search(query)
 
-    enriched = summarize_attributes(
+    scraped = summarize_attributes(
         entry,
         search_results,
         attributes
     )
 
-    return {**entry, **enriched}
-
-
-def expand_searching_attr(
-    df: pd.DataFrame,
-    sample_size: int = 10,
-    description: str = ""
-) -> tuple[pd.DataFrame, list[str]]:
-
-    if df.empty:
-        raise ValueError("Initial CSV is empty")
-
-    sample = df.sample(
-        n=min(sample_size, len(df)),
-        random_state=random.randint(0, 2**31 - 1)
-    )
-
-    sample_records = []
-
-    for entry in sample.to_dict(orient="records"):
-        query = (
-            f'"{entry["name"]}" '
-            f'{entry.get("description", "")[:100]}'
-        )
-
-        results = google_search(query)
-
-        sample_records.append({
-            "entry": entry,
-            "search_results": results
-        })
-
-    attributes = discover_attributes(
-        sample_records,
-        description=description
-    )
-
-    enriched = [
-        search_and_enrich(
-            record["entry"],
-            attributes,
-            record["search_results"]
-        )
-        for record in sample_records
-    ]
-
-    return pd.DataFrame(enriched), attributes
+    return {**entry, **scraped}

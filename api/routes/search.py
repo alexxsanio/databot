@@ -1,84 +1,127 @@
-import requests
+
+from flask import Blueprint, request, jsonify, send_file
+
 import pandas as pd
 
-from fastapi import APIRouter, HTTPException
-from fastapi.responses import FileResponse
-
-from models.schemas import SearchRequest
-from utils.enrichment import search_and_enrich
+from utils.attribute_search import scrape_attr
 from utils.storage import (
-    read_initial_csv,
-    dataset_dir,
-    read_json
+    get_dataset_dir,
+    load_initial_csv,
+    load_json,
+    save_json
 )
 
-router = APIRouter(tags=["Full Search"])
+
+search_bp = Blueprint("search", __name__)
 
 
-@router.post("/search")
-def search_route(request: SearchRequest):
+@search_bp.route("/search", methods=["POST"])
+def search_route():
+    data = request.get_json(silent=True) or {}
 
-    df = read_initial_csv(request.dataset_id)
-    path = dataset_dir(request.dataset_id)
+    dataset_id = data.get("dataset_id")
+    attributes = data.get("attributes")
 
-    metadata = read_json(path / "metadata.json")
+    if not dataset_id:
+        return jsonify({
+            "error": "dataset_id is required"
+        }), 400
 
-    available = set(
-        metadata.get("available_attributes", [])
-    )
+    if (
+        not isinstance(attributes, list)
+        or not attributes
+        or not all(
+            isinstance(attr, str)
+            for attr in attributes
+        )
+    ):
+        return jsonify({
+            "error": "attributes must be a nonempty list of strings"
+        }), 400
 
-    attributes = list(dict.fromkeys(
-        request.attributes
-    ))
+    attributes = list(dict.fromkeys(attributes))
 
-    invalid = [
-        attr for attr in attributes
-        if attr not in available
-    ]
+    try:
+        dataset_dir = get_dataset_dir(dataset_id)
 
-    if invalid:
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "error": "Attributes not discovered",
-                "invalid": invalid,
-                "available": sorted(available)
-            }
+        metadata_path = dataset_dir / "metadata.json"
+        metadata = load_json(metadata_path)
+
+        available_attributes = metadata.get(
+            "available_attributes", []
         )
 
-    enriched_entries = []
+        if not available_attributes:
+            return jsonify({
+                "error": "Run /expand_search first"
+            }), 409
 
-    for entry in df.to_dict(orient="records"):
-        try:
-            enriched = search_and_enrich(
-                entry,
-                attributes
+        invalid_attributes = [
+            attr for attr in attributes
+            if attr not in available_attributes
+        ]
+
+        if invalid_attributes:
+            return jsonify({
+                "error": "Some attributes are not available",
+                "invalid_attributes": invalid_attributes,
+                "available_attributes": available_attributes
+            }), 400
+
+        df = load_initial_csv(dataset_id)
+
+        if df.empty:
+            return jsonify({
+                "error": "Initial CSV is empty"
+            }), 400
+
+        enriched_entries = []
+
+        for entry in df.to_dict(orient="records"):
+            result = scrape_attr(
+                entry=entry,
+                attributes=attributes
             )
 
-        except (requests.RequestException, RuntimeError):
-            enriched = dict(entry)
+            enriched_entries.append(result)
 
-            for attr in attributes:
-                enriched[attr] = None
-                enriched[f"{attr}_summary"] = ""
-                enriched[f"{attr}_source"] = ""
+        enriched_df = pd.DataFrame(enriched_entries)
 
-        enriched_entries.append(enriched)
+        csv_path = dataset_dir / "enriched.csv"
 
-    result = pd.DataFrame(enriched_entries)
-    output_path = path / "enriched.csv"
+        enriched_df.to_csv(
+            csv_path,
+            index=False
+        )
 
-    result.to_csv(
-        output_path,
-        index=False
-    )
+        metadata["selected_attributes"] = attributes
+        metadata["enriched_count"] = len(enriched_entries)
 
-    return FileResponse(
-        path=output_path,
-        filename="enriched.csv",
-        media_type="text/csv",
-        headers={
-            "X-Dataset-ID": request.dataset_id,
-            "X-Entry-Count": str(len(result))
-        }
-    )
+        save_json(metadata_path, metadata)
+
+        response = send_file(
+            csv_path,
+            mimetype="text/csv",
+            as_attachment=True,
+            download_name="enriched.csv"
+        )
+
+        response.headers["X-Dataset-ID"] = dataset_id
+        response.headers["X-Enriched-Count"] = str(
+            len(enriched_entries)
+        )
+
+        return response
+
+    except (ValueError, TypeError) as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    except FileNotFoundError:
+        return jsonify({
+            "error": "Dataset not found"
+        }), 404
+
+    except Exception:
+        return jsonify({
+            "error": "Failed to complete search"
+        }), 500

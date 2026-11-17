@@ -1,5 +1,8 @@
-import requests
+
+import json
+
 import pandas as pd
+import requests
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
@@ -18,7 +21,6 @@ router = APIRouter(tags=["Expand Search"])
 
 @router.post("/expand_search")
 def expand_search_route(request: ExpandSearchRequest):
-
     df = read_initial_csv(request.dataset_id)
 
     try:
@@ -42,8 +44,10 @@ def expand_search_route(request: ExpandSearchRequest):
 
     path = dataset_dir(request.dataset_id)
 
+    output_path = path / "expanded_sample.csv"
+
     expanded_df.to_csv(
-        path / "expanded_sample.csv",
+        output_path,
         index=False
     )
 
@@ -54,34 +58,13 @@ def expand_search_route(request: ExpandSearchRequest):
 
     save_json(metadata_path, metadata)
 
-    return {
-        "dataset_id": request.dataset_id,
-        "sample_size": len(expanded_df),
-        "available_attributes": attributes,
-        "sample_results": expanded_df.where(
-            pd.notna(expanded_df), None
-        ).to_dict(orient="records")
-    }
-
-
-@router.get("/datasets/{dataset_id}/sample")
-def download_sample(dataset_id: str):
-
-    path = dataset_dir(dataset_id) / "expanded_sample.csv"
-
-    if not path.exists():
-        raise HTTPException(404, "Sample CSV not found")
-
     return FileResponse(
-        path,
+        path=output_path,
         filename="expanded_sample.csv",
-        media_type="text/csv"
+        media_type="text/csv",
+        headers={
+            "X-Dataset-ID": request.dataset_id,
+            "X-Entry-Count": str(len(expanded_df)),
+            "X-Available-Attributes": json.dumps(attributes)
+        }
     )
-
-
-@router.get("/datasets/{dataset_id}/metadata")
-def get_metadata(dataset_id: str):
-
-    path = dataset_dir(dataset_id) / "metadata.json"
-
-    return read_json(path)
