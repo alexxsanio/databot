@@ -8,6 +8,7 @@ import {
 } from "react";
 
 import {
+  ArrowRight,
   ArrowUp,
   Bot,
   FileSpreadsheet,
@@ -38,6 +39,7 @@ import AttributeSelector, {
 type Stage =
   | "initial"
   | "scraping"
+  | "ready_to_expand"
   | "expanding"
   | "selecting"
   | "enriching";
@@ -99,6 +101,9 @@ export default function HomePage() {
   const [selectedAttributes, setSelectedAttributes] =
     useState<string[]>([]);
 
+  const [researchDescription, setResearchDescription] = useState("");
+
+  const [sampleSize] = useState(10);
   const scrollRef = useRef<HTMLDivElement>(null);
   const objectUrls = useRef<string[]>([]);
   const busyRef = useRef(false);
@@ -169,25 +174,29 @@ export default function HomePage() {
     if (!parsed) {
       addMessage(
         "assistant",
-        "Please provide a valid webpage URL " +
-          "beginning with https:// or http://."
+        "Please provide a valid webpage URL beginning with " +
+          "https:// or http://."
       );
       return;
     }
-
+    console.log("scraping")
     busyRef.current = true;
     setStage("scraping");
 
     try {
-      // 1. Scrape the initial webpage.
-      const initial = await initSearch([parsed.url]);
+      console.log("initSearch started")
+      const initial = await initSearch([text]);
+
+      console.log("initSearch complete")
 
       if (!initial.datasetId) {
         throw new Error("Missing dataset ID.");
       }
 
       const id = initial.datasetId;
+
       setDatasetId(id);
+      setResearchDescription(parsed.description);
 
       const initialFile = createFile(
         initial,
@@ -196,20 +205,50 @@ export default function HomePage() {
 
       addMessage(
         "assistant",
-        "I've extracted the initial entries from " +
-          "your webpage. Download the CSV below. " +
-          "I'll now research a sample of 10 entries " +
-          "to identify useful enrichment attributes.",
+        "I've completed the initial webpage scraping. " +
+          "You can download the initial CSV below. " +
+          "Review the entries before continuing.",
         initialFile
       );
 
-      // 2. Discover available attributes.
-      setStage("expanding");
+      addMessage(
+        "assistant",
+        "When you're ready, click Proceed to research " +
+          "a sample of entries and discover enrichment attributes."
+      );
 
+      // Wait for the user to click Proceed.
+      setStage("ready_to_expand");
+
+    } catch (error) {
+      addMessage(
+        "assistant",
+        `Initial scraping failed: ${getError(error)}`
+      );
+
+      setStage("initial");
+
+    } finally {
+      busyRef.current = false;
+    }
+  }
+
+  async function handleProceed() {
+    if (!datasetId || busyRef.current) return;
+
+    busyRef.current = true;
+    setStage("expanding");
+
+    addMessage(
+      "user",
+      "Proceed to attribute discovery."
+    );
+
+    try {
       const expanded = await expandSearch(
-        id,
-        parsed.description,
-        10
+        datasetId,
+        researchDescription,
+        sampleSize
       );
 
       const sampleFile = createFile(
@@ -224,17 +263,16 @@ export default function HomePage() {
 
       addMessage(
         "assistant",
-        "I've completed the sample research. " +
-          "You can download the sample CSV below.",
+        "I've researched a sample of entries. " +
+          "You can download the sample results below.",
         sampleFile
       );
 
       if (attributes.length === 0) {
         addMessage(
           "assistant",
-          "The backend returned no suggested attributes. " +
-            "Please check the enrichment endpoint or " +
-            "start another research session."
+          "No enrichment attributes were discovered. " +
+            "You can try another webpage."
         );
 
         setStage("initial");
@@ -243,19 +281,22 @@ export default function HomePage() {
 
       addMessage(
         "assistant",
-        "Choose from the suggested attributes below, " +
-          "or enter the attribute names in the chat. " +
-          "I'll search every entry in your initial CSV."
+        "Here are the suggested enrichment attributes. " +
+          "Select the ones you'd like to research, or " +
+          "type their names in the chat."
       );
 
       setStage("selecting");
+
     } catch (error) {
       addMessage(
         "assistant",
-        `Research failed: ${getError(error)}`
+        `Attribute discovery failed: ${getError(error)}`
       );
 
-      setStage("initial");
+      // Allow retry without rescraping.
+      setStage("ready_to_expand");
+
     } finally {
       busyRef.current = false;
     }
@@ -369,6 +410,14 @@ export default function HomePage() {
 
     if (!text || busyRef.current) return;
 
+    if (stage === "ready_to_expand") {
+      addMessage(
+        "assistant",
+        "Please click Proceed to continue to attribute discovery."
+      );
+      return;
+    }
+
     setInput("");
     addMessage("user", text);
 
@@ -381,26 +430,35 @@ export default function HomePage() {
       const requested = resolveAttributes(text);
 
       if (requested.length > 0) {
-        setSelectedAttributes(requested);
-        await handleEnrichment(requested);
-      } else if (
-        /^(start|search|enrich|continue|go|run)$/i.test(
-          text
-        )
-      ) {
-        await handleEnrichment(selectedAttributes);
-      } else {
+        setSelectedAttributes((previous) => [
+          ...new Set([...previous, ...requested])
+        ]);
+
         addMessage(
           "assistant",
-          "Please choose from the suggested attributes, " +
-            "or enter their names separated by commas."
+          "I've selected the following attributes: " +
+            requested.map(formatAttribute).join(", ") +
+            ". Click Enrich all entries to begin the final search."
         );
+
+        // Do NOT start enrichment automatically.
+        return;
       }
+
+      addMessage(
+        "assistant",
+        "I couldn't match those attributes. " +
+          "Please enter names from the suggested list."
+      );
     }
   }
 
   function submitSelected() {
-    if (busyRef.current || selectedAttributes.length === 0) {
+    if (
+      busyRef.current ||
+      stage !== "selecting" ||
+      selectedAttributes.length === 0
+    ) {
       return;
     }
 
@@ -429,11 +487,11 @@ export default function HomePage() {
 
           <div>
             <div className="brand-title">
-              Web Research
+              Databot
             </div>
 
             <div className="brand-subtitle">
-              Scrape & enrich data
+              Scrape webpage data
             </div>
           </div>
         </div>
@@ -501,6 +559,27 @@ export default function HomePage() {
               />
             ))}
 
+            {stage === "ready_to_expand" && (
+              <div className="message assistant">
+                <div className="avatar">
+                  <Bot size={19} />
+                </div>
+
+                <div className="message-content">
+                  <button
+                    type="button"
+                    className="proceed-button"
+                    onClick={handleProceed}
+                    disabled={isLoading}
+                  >
+                    <Sparkles size={16} />
+                    Proceed to attribute discovery
+                    <ArrowRight size={17} />
+                  </button>
+                </div>
+              </div>
+            )}
+
             {stage === "selecting" && (
               <div className="message assistant">
                 <div className="avatar">
@@ -557,11 +636,13 @@ export default function HomePage() {
               onChange={(event) =>
                 setInput(event.target.value)
               }
-              disabled={isLoading}
+              disabled={isLoading || stage === "ready_to_expand"}
               placeholder={
-                stage === "selecting"
-                  ? "Enter attributes, e.g. founding year, headquarters..."
-                  : "Paste a webpage URL and describe your research..."
+                stage === "ready_to_expand"
+                  ? "Click Proceed above to continue..."
+                  : stage === "selecting"
+                    ? "Enter requested attributes..."
+                    : "Paste a webpage URL and describe your research..."
               }
               rows={2}
               onKeyDown={(event) => {

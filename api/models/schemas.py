@@ -8,8 +8,15 @@ class InitSearchRequest(BaseModel):
 
 class ExpandSearchRequest(BaseModel):
     dataset_id: str
-    sample_size: int = Field(default=10, ge=1, le=100)
-    description: str = Field(default="", max_length=2000)
+    description: str = Field(
+        default="",
+        max_length=2000
+    )
+    sample_size: int = Field(
+        default=10,
+        ge=1,
+        le=100
+    )
 
 
 class SearchRequest(BaseModel):
@@ -23,9 +30,9 @@ class DiscoveredAttributes(BaseModel):
 
 class ExtractedAttribute(BaseModel):
     attribute: str
-    value: str | None
-    summary: str
-    source_url: str | None
+    value: str | None = None
+    summary: str = ""
+    source_url: str | None = None
 
 
 class AttributeExtraction(BaseModel):

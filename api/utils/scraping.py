@@ -1,3 +1,4 @@
+
 import re
 from collections import Counter
 from urllib.parse import urljoin, urlparse
@@ -6,42 +7,72 @@ import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 
-from core.config import DATA_DIR, HEADERS
-from utils.storage import save_json
+from core.config import HEADERS, REQUEST_TIMEOUT
+from utils.storage import (
+    get_dataset_dir,
+    save_json
+)
 
 
 def clean_text(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def suggest_elements(soup: BeautifulSoup) -> list[dict]:
+def suggest_elements(
+    soup: BeautifulSoup
+) -> list[dict]:
+    """
+    Suggest CSS selectors for repeated webpage items.
+    """
+
     counts = Counter()
 
-    for tag in soup.find_all(["article", "li", "div", "tr"]):
+    for tag in soup.find_all(
+        ["article", "li", "div", "tr"]
+    ):
         if tag.name == "tr":
-            counts["table tr"] += 1
+            counts["tr"] += 1
 
         for css_class in tag.get("class", []):
-            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", css_class):
-                counts[f"{tag.name}.{css_class}"] += 1
+            if re.fullmatch(
+                r"[A-Za-z_][A-Za-z0-9_-]*",
+                css_class
+            ):
+                selector = f"{tag.name}.{css_class}"
+                counts[selector] += 1
 
     return [
-        {"selector": selector, "count": count}
+        {
+            "selector": selector,
+            "count": count
+        }
         for selector, count in counts.most_common(20)
         if count >= 2
     ]
 
 
-def extract_entry(element, base_url: str) -> dict | None:
+def extract_entry(
+    element,
+    base_url: str
+) -> dict | None:
+    """
+    Extract one structured entry from an HTML element.
+    """
+
     anchor = element.find("a", href=True)
+
     heading = element.find(
         ["h1", "h2", "h3", "h4", "strong"]
     )
 
     if heading:
-        name = clean_text(heading.get_text(" ", strip=True))
+        name = clean_text(
+            heading.get_text(" ", strip=True)
+        )
     elif anchor:
-        name = clean_text(anchor.get_text(" ", strip=True))
+        name = clean_text(
+            anchor.get_text(" ", strip=True)
+        )
     else:
         name = ""
 
@@ -57,7 +88,8 @@ def extract_entry(element, base_url: str) -> dict | None:
 
     url = (
         urljoin(base_url, anchor["href"])
-        if anchor else base_url
+        if anchor
+        else base_url
     )
 
     return {
@@ -72,58 +104,98 @@ def init_search(
     webpages: list[str],
     selector: str | None = None
 ) -> tuple[list[dict], dict]:
+    """
+    Scrape webpages and identify repeated entries.
+
+    Returns:
+        entries
+        suggestions_by_page
+    """
 
     entries = []
     suggestions_by_page = {}
 
     for webpage in webpages:
-        parsed = urlparse(webpage)
+        parsed_url = urlparse(webpage)
 
-        if parsed.scheme not in {"http", "https"}:
-            raise ValueError("Only HTTP(S) URLs are supported")
+        if parsed_url.scheme not in {
+            "http",
+            "https"
+        }:
+            raise ValueError(
+                "Only HTTP(S) URLs are supported"
+            )
 
         response = requests.get(
             webpage,
             headers=HEADERS,
-            timeout=20
+            timeout=REQUEST_TIMEOUT
         )
+
         response.raise_for_status()
 
-        soup = BeautifulSoup(response.text, "html.parser")
+        soup = BeautifulSoup(
+            response.text,
+            "html.parser"
+        )
 
         suggestions = suggest_elements(soup)
+
         suggestions_by_page[webpage] = suggestions
 
         if selector:
             selected = soup.select(selector)
+
         elif soup.select("table tbody tr"):
             selected = soup.select("table tbody tr")
+
         elif soup.select("article"):
             selected = soup.select("article")
+
         elif suggestions:
-            selected = soup.select(suggestions[0]["selector"])
+            selected = soup.select(
+                suggestions[0]["selector"]
+            )
+
         else:
-            selected = soup.select("main a[href]")
+            selected = soup.select(
+                "main a[href]"
+            )
 
         for element in selected:
-            entry = extract_entry(element, webpage)
+            entry = extract_entry(
+                element,
+                webpage
+            )
+
             if entry:
                 entries.append(entry)
 
+    # Remove duplicate entries.
     seen = set()
     unique_entries = []
 
     for entry in entries:
-        key = (entry["name"], entry["url"])
+        key = (
+            entry["name"],
+            entry["url"]
+        )
 
         if key not in seen:
             seen.add(key)
             unique_entries.append(entry)
 
-    for index, entry in enumerate(unique_entries, 1):
+    # Assign entry identifiers.
+    for index, entry in enumerate(
+        unique_entries,
+        start=1
+    ):
         entry["entry_id"] = index
 
-    return unique_entries, suggestions_by_page
+    return (
+        unique_entries,
+        suggestions_by_page
+    )
 
 
 def save_init_search(
@@ -131,10 +203,19 @@ def save_init_search(
     dataset_id: str,
     suggestions: dict
 ):
-    path = DATA_DIR / dataset_id
-    path.mkdir(parents=True, exist_ok=True)
+    """
+    Save initial entries and metadata to a
+    dataset-specific directory.
+    """
 
-    csv_path = path / "initial.csv"
+    dataset_path = get_dataset_dir(dataset_id)
+
+    dataset_path.mkdir(
+        parents=True,
+        exist_ok=True
+    )
+
+    csv_path = dataset_path / "initial.csv"
 
     columns = [
         "entry_id",
@@ -144,18 +225,27 @@ def save_init_search(
         "source_page"
     ]
 
-    pd.DataFrame(entries, columns=columns).to_csv(
+    df = pd.DataFrame(
+        entries,
+        columns=columns
+    )
+
+    df.to_csv(
         csv_path,
         index=False
     )
 
+    metadata = {
+        "dataset_id": dataset_id,
+        "total_entries": len(df),
+        "suggested_elements": suggestions,
+        "available_attributes": [],
+        "status": "initialized"
+    }
+
     save_json(
-        path / "metadata.json",
-        {
-            "dataset_id": dataset_id,
-            "suggested_elements": suggestions,
-            "available_attributes": []
-        }
+        dataset_path / "metadata.json",
+        metadata
     )
 
     return csv_path

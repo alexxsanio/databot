@@ -1,0 +1,90 @@
+{
+  "dataset_id": "864b9ccbcb734748bf8ac304441a2059",
+  "total_entries": 1,
+  "suggested_elements": {
+    "https://en.wikipedia.org/wiki/IUCN_Red_List_endangered_species_(Animalia)": [
+      {
+        "selector": "li.vector-toc-list-item",
+        "count": 838
+      },
+      {
+        "selector": "div.vector-toc-text",
+        "count": 838
+      },
+      {
+        "selector": "div.mw-heading",
+        "count": 837
+      },
+      {
+        "selector": "li.vector-toc-level-4",
+        "count": 667
+      },
+      {
+        "selector": "div.mw-heading5",
+        "count": 667
+      },
+      {
+        "selector": "div.div-col",
+        "count": 667
+      },
+      {
+        "selector": "li.vector-toc-level-3",
+        "count": 138
+      },
+      {
+        "selector": "div.mw-heading4",
+        "count": 138
+      },
+      {
+        "selector": "li.mw-list-item",
+        "count": 46
+      },
+      {
+        "selector": "li.vector-toc-level-2",
+        "count": 23
+      },
+      {
+        "selector": "div.mw-heading3",
+        "count": 23
+      },
+      {
+        "selector": "div.mw-portlet",
+        "count": 17
+      },
+      {
+        "selector": "div.vector-menu-content",
+        "count": 15
+      },
+      {
+        "selector": "div.vector-menu",
+        "count": 14
+      },
+      {
+        "selector": "li.vector-menu-item--collapsible",
+        "count": 14
+      },
+      {
+        "selector": "li.vector-toc-level-1",
+        "count": 10
+      },
+      {
+        "selector": "div.mw-heading2",
+        "count": 9
+      },
+      {
+        "selector": "div.vector-dropdown",
+        "count": 8
+      },
+      {
+        "selector": "div.vector-dropdown-content",
+        "count": 8
+      },
+      {
+        "selector": "div.emptyPortlet",
+        "count": 7
+      }
+    ]
+  },
+  "available_attributes": [],
+  "status": "initialized"
+}

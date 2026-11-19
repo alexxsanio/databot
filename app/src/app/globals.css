@@ -267,6 +267,37 @@ button:disabled {
   overflow-wrap: anywhere;
 }
 
+.proceed-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+
+  margin-top: 8px;
+  padding: 13px 18px;
+
+  font-size: 14px;
+  font-weight: 600;
+
+  color: #ffffff;
+  background: #252c3a;
+
+  border: none;
+  border-radius: 10px;
+
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+.proceed-button:hover:not(:disabled) {
+  background: #3b465a;
+}
+
+.proceed-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 /* CSV attachments */
 
 .file-card {

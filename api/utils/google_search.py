@@ -1,38 +1,48 @@
 import requests
 
-from core.config import GOOGLE_API_KEY, GOOGLE_CX
+from core.config import (
+    GOOGLE_API_KEY,
+    GOOGLE_SEARCH_ENGINE_ID,
+    GOOGLE_RESULTS_PER_QUERY,
+    REQUEST_TIMEOUT
+)
 
 
 def google_search(
     query: str,
-    num_results: int = 10
+    num_results: int = GOOGLE_RESULTS_PER_QUERY
 ) -> list[dict]:
 
-    if not GOOGLE_API_KEY or not GOOGLE_CX:
+    if not GOOGLE_API_KEY:
         raise RuntimeError(
-            "Google Search API credentials are missing"
+            "GOOGLE_API_KEY is missing"
+        )
+
+    if not GOOGLE_SEARCH_ENGINE_ID:
+        raise RuntimeError(
+            "GOOGLE_SEARCH_ENGINE_ID is missing"
         )
 
     response = requests.get(
         "https://customsearch.googleapis.com/customsearch/v1",
         params={
             "key": GOOGLE_API_KEY,
-            "cx": GOOGLE_CX,
+            "cx": GOOGLE_SEARCH_ENGINE_ID,
             "q": query,
-            "num": min(num_results, 10)
+            "num": min(max(num_results, 1), 10)
         },
-        timeout=20
+        timeout=REQUEST_TIMEOUT
     )
 
     response.raise_for_status()
 
-    items = response.json().get("items", [])
+    results = response.json().get("items", [])
 
     return [
         {
-            "title": item.get("title", ""),
-            "snippet": item.get("snippet", ""),
-            "url": item.get("link", "")
+            "title": result.get("title", ""),
+            "snippet": result.get("snippet", ""),
+            "url": result.get("link", "")
         }
-        for item in items
+        for result in results
     ]
